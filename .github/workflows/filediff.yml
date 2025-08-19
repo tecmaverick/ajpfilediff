@@ -1,0 +1,43 @@
+name: Diff Directory Files
+
+on:
+  workflow_dispatch:
+    inputs:
+      compare_branch:
+        description: 'Branch to compare against'
+        required: true
+        default: 'dev'
+      target_directory:
+        description: 'Directory to check for changes'
+        required: true
+        default: 'sql/'
+
+jobs:
+  list-changed-files:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch compare branch (handles slashes safely)
+        shell: bash
+        run: |
+          set -euo pipefail
+          BRANCH="${{ github.event.inputs.compare_branch }}"
+          # Fetch exactly this branch name (including slashes) into refs/remotes/origin/BRANCH
+          git fetch --no-tags origin "${BRANCH}:refs/remotes/origin/${BRANCH}"
+
+      - name: List differing filenames (restricted to directory)
+        shell: bash
+        run: |
+          set -euo pipefail
+          BRANCH="${{ github.event.inputs.compare_branch }}"
+          DIR="${{ github.event.inputs.target_directory }}"
+
+          # Ensure directory pathspec works even if user provided trailing slash
+          # Use triple-dot to diff from merge-base between branches
+          git diff --name-only --diff-filter=ACMRTUXB "origin/${BRANCH}"...HEAD -- "${DIR%/}" \
+            | awk -F/ '{ print $NF }' \
+            | sort -u
