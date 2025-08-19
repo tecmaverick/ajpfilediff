@@ -13,89 +13,31 @@ on:
         default: 'sql/'
 
 jobs:
-  diff-check:
+  list-changed-files:
     runs-on: ubuntu-latest
-
-    outputs:
-      has_changes: ${{ steps.diff.outputs.has_changes }}
-      files: ${{ steps.diff.outputs.files }}
-      files_json: ${{ steps.diff.outputs.files_json }}
-      artifact_path: ${{ steps.package.outputs.artifact_path }}
-
     steps:
-      - name: Checkout current branch
+      - name: Checkout (full history)
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Fetch compare branch
-        run: git fetch origin ${{ github.event.inputs.compare_branch }} --depth=1
-
-      - name: Diff and expose outputs
-        id: diff
+      - name: Fetch compare branch (handles slashes safely)
         shell: bash
         run: |
           set -euo pipefail
-          TARGET_DIR="${{ github.event.inputs.target_directory }}"
-          COMPARE="origin/${{ github.event.inputs.compare_branch }}"
-          echo "Comparing HEAD to ${COMPARE}"
-          echo "Target directory: ${TARGET_DIR}"
+          BRANCH="${{ github.event.inputs.compare_branch }}"
+          # Fetch exactly this branch name (including slashes) into refs/remotes/origin/BRANCH
+          git fetch --no-tags origin "${BRANCH}:refs/remotes/origin/${BRANCH}"
 
-          # Ensure pathspec works even if user passes without trailing slash
-          # and ensure we only match inside the directory.
-          case "$TARGET_DIR" in
-            */) ;; # already has trailing slash
-            *) TARGET_DIR="${TARGET_DIR}/" ;;
-          esac
-
-          # List changed files within the directory (three-dot to include merge base)
-          CHANGED_FILES="$(git diff --name-only "${COMPARE}...HEAD" -- "$TARGET_DIR" || true)"
-
-          if [ -z "$CHANGED_FILES" ]; then
-            echo "No changes detected in ${TARGET_DIR}"
-            HAS_CHANGES=false
-          else
-            echo "Changed files:"
-            echo "$CHANGED_FILES"
-            HAS_CHANGES=true
-          fi
-
-          # Newline list (good for humans / artifacts)
-          {
-            echo 'files<<EOF'
-            echo "$CHANGED_FILES"
-            echo 'EOF'
-            echo "has_changes=${HAS_CHANGES}"
-          } >> "$GITHUB_OUTPUT"
-
-          # Also provide a JSON array (good for fromJson() in later steps)
-          # Pure awk approach to avoid extra deps.
-          FILES_JSON=$(
-            printf '%s\n' "$CHANGED_FILES" \
-            | awk 'BEGIN{printf "["; first=1}
-                   NF{
-                     gsub(/\\/,"\\\\"); gsub(/"/,"\\\"");
-                     if(!first) printf ",";
-                     printf "\""$0"\""; first=0
-                   }
-                   END{printf "]"}'
-          )
-          echo "files_json=${FILES_JSON}" >> "$GITHUB_OUTPUT"
-
-          # Save to disk for artifact upload
-          mkdir -p diff
-          printf "%s\n" "$CHANGED_FILES" > diff/changed_files.txt
-
-      - name: Package artifact path
-        id: package
+      - name: List differing filenames (restricted to directory)
+        shell: bash
         run: |
-          echo "artifact_path=diff/changed_files.txt" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          BRANCH="${{ github.event.inputs.compare_branch }}"
+          DIR="${{ github.event.inputs.target_directory }}"
 
-      - name: Upload changed files artifact
-        if: steps.diff.outputs.has_changes == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: changed-files-${{ github.ref_name }}
-          path: ${{ steps.package.outputs.artifact_path }}
-          if-no-files-found: warn
-          retention-days: 7
+          # Ensure directory pathspec works even if user provided trailing slash
+          # Use triple-dot to diff from merge-base between branches
+          git diff --name-only --diff-filter=ACMRTUXB "origin/${BRANCH}"...HEAD -- "${DIR%/}" \
+            | awk -F/ '{ print $NF }' \
+            | sort -u
