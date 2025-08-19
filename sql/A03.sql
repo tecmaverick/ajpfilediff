@@ -1,1 +1,1 @@
-select * from A03
+select * from A03 WHERE 1=2
