@@ -1,43 +1,166 @@
-name: Diff Directory Files
+#name: Diff Directory Files
+#
+#on:
+#  workflow_dispatch:
+#    inputs:
+#      compare_branch:
+#        description: 'Branch to compare against'
+#        required: true
+#        default: 'dev'
+#      target_directory:
+#        description: 'Directory to check for changes'
+#        required: true
+#        default: 'sql/'
+#
+#jobs:
+#  list-changed-files:
+#    runs-on: ubuntu-latest
+#    steps:
+#      - name: Checkout (full history)
+#        uses: actions/checkout@v4
+#        with:
+#          fetch-depth: 0
+#
+#      - name: Fetch compare branch (handles slashes safely)
+#        shell: bash
+#        run: |
+#          set -euo pipefail
+#          BRANCH="${{ github.event.inputs.compare_branch }}"
+#          # Fetch exactly this branch name (including slashes) into refs/remotes/origin/BRANCH
+#          git fetch --no-tags origin "${BRANCH}:refs/remotes/origin/${BRANCH}"
+#
+#      - name: List differing filenames (restricted to directory)
+#        shell: bash
+#        run: |
+#          set -euo pipefail
+#          BRANCH="${{ github.event.inputs.compare_branch }}"
+#          DIR="${{ github.event.inputs.target_directory }}"
+#
+#          # Ensure directory pathspec works even if user provided trailing slash
+#          # Use triple-dot to diff from merge-base between branches
+#          git diff --name-only --diff-filter=ACMRTUXB "origin/${BRANCH}"...HEAD -- "${DIR%/}" \
+#            | awk -F/ '{ print $NF }' \
+#            | sort -u
+#=======================================================================================================================
+
+name: SQL File Change Detector
 
 on:
+  # Trigger 1: Automatic execution on Pull Request merge to main or develop
+  pull_request:
+    types: [closed]
+    branches:
+      - 'main'
+      - 'develop'
+
+  # Trigger 2: Manual execution with required inputs
   workflow_dispatch:
     inputs:
-      compare_branch:
-        description: 'Branch to compare against'
+      base_branch:
+        description: 'The base branch to compare against (e.g., master)'
         required: true
-        default: 'dev'
-      target_directory:
-        description: 'Directory to check for changes'
+        type: choice
+        options:
+          - master
+          - dev
+      source_branch:
+        description: 'The source branch containing the changes (e.g., feature/new-schema)'
         required: true
-        default: 'sql/'
+        type: string
 
+# -----------------------------------------------------------------------------
+# Security: Principle of Least Privilege
+# -----------------------------------------------------------------------------
+# This block restricts the permissions of the GITHUB_TOKEN for this workflow.
+# It's a critical security best practice.
+permissions:
+  contents: read       # Required for actions/checkout
+  pull-requests: read # Required for dorny/paths-filter to read PR data
+
+# -----------------------------------------------------------------------------
+# Workflow Jobs
+# -----------------------------------------------------------------------------
 jobs:
-  list-changed-files:
+  # ---------------------------------------------------------------------------
+  # Job 1: Find Changed Files
+  # This job's purpose is to identify if any files in the 'sql/' directory
+  # have changed. It will output its findings for subsequent jobs.
+  # ---------------------------------------------------------------------------
+  find-changed-files:
+    name: Detect SQL File Changes
     runs-on: ubuntu-latest
+
+    # Define job outputs that can be consumed by other jobs
+    outputs:
+      sql_files_changed: ${{ steps.changes.outputs.sql_files }}
+      sql_files_list: ${{ steps.changes.outputs.sql_files_files }}
+
     steps:
-      - name: Checkout (full history)
+      # Step 1.1: Checkout the repository code
+      # 'fetch-depth: 0' is not strictly required by dorny/paths-filter when
+      # a token is provided, but it's good practice for Git-based operations.
+      - name: Checkout repository
         uses: actions/checkout@v4
+
+      # Step 1.2: Use the paths-filter action to detect changes
+      # This action is the core of our detection logic. It compares the
+      # base and head of the PR (or the manually specified branches)
+      # and checks for changes in the specified path.
+      - name: Check for changes in SQL files
+        id: changes
+        uses: dorny/paths-filter@v3
         with:
-          fetch-depth: 0
+          # A token is required for the action to fetch PR data via the API.
+          # The default GITHUB_TOKEN is sufficient.
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Fetch compare branch (handles slashes safely)
-        shell: bash
+          # Define the filters. We create one named 'sql_files'.
+          filters: |
+            sql_files:
+              - 'sql/**'
+
+  # ---------------------------------------------------------------------------
+  # Job 2: Process SQL Files
+  # This job will only run if the first job detected changes in SQL files.
+  # It demonstrates how to consume the outputs and act on the changed files.
+  # ---------------------------------------------------------------------------
+  process-sql-files:
+    name: Process Changed SQL Files
+    runs-on: ubuntu-latest
+
+    # This job depends on the successful completion of 'find-changed-files'
+    needs: find-changed-files
+
+    # This is the conditional execution logic. The entire job will be skipped
+    # unless the 'sql_files_changed' output from the previous job is 'true'.
+    # This also handles the case where a PR is closed without merging.
+    if: |
+      github.event.pull_request.merged == true &&
+      needs.find-changed-files.outputs.sql_files_changed == 'true' ||
+      github.event_name == 'workflow_dispatch' &&
+      needs.find-changed-files.outputs.sql_files_changed == 'true'
+
+    steps:
+      # Step 2.1: Acknowledge that changes were found
+      - name: Acknowledge SQL changes
+        run: echo "Changes detected in the 'sql/' directory. Proceeding with processing."
+
+      # Step 2.2: Display the list of changed files
+      # This step demonstrates how to access the file list from the previous job's output.
+      # The list is a space-separated string.
+      - name: List changed SQL files
         run: |
-          set -euo pipefail
-          BRANCH="${{ github.event.inputs.compare_branch }}"
-          # Fetch exactly this branch name (including slashes) into refs/remotes/origin/BRANCH
-          git fetch --no-tags origin "${BRANCH}:refs/remotes/origin/${BRANCH}"
+          echo "The following SQL files were modified:"
+          for file in ${{ needs.find-changed-files.outputs.sql_files_list }}; do
+            echo "- $file"
+          done
 
-      - name: List differing filenames (restricted to directory)
-        shell: bash
+      # Step 2.3: Placeholder for actual deployment/validation logic
+      # In a real-world scenario, this is where you would call a database
+      # migration tool, a schema linter, or any other process that needs
+      # the list of changed SQL files.
+      - name: (Placeholder) Run database migration tool
         run: |
-          set -euo pipefail
-          BRANCH="${{ github.event.inputs.compare_branch }}"
-          DIR="${{ github.event.inputs.target_directory }}"
-
-          # Ensure directory pathspec works even if user provided trailing slash
-          # Use triple-dot to diff from merge-base between branches
-          git diff --name-only --diff-filter=ACMRTUXB "origin/${BRANCH}"...HEAD -- "${DIR%/}" \
-            | awk -F/ '{ print $NF }' \
-            | sort -u
+          echo "Simulating a database migration process..."
+          # Example: flyway migrate -locations="${{ needs.find-changed-files.outputs.sql_files_list }}"
+          echo "Simulation complete."
